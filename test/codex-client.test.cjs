@@ -155,3 +155,13 @@ test('retries transport resets before initialization but never replays initializ
     }
   });
 });
+
+
+test('owned observer accepts native-compatible large notifications without losing its connection', { timeout: 10000 }, async t => {
+  const client = await CodexClient.start({ cwd: __dirname, executable });
+  t.after(() => client.close());
+  const notification = once(client, 'notification');
+  const [received] = await Promise.all([notification, client.request('largeNotification', {})]);
+  assert.equal(received[0].params.delta.length, 17 * 1024 * 1024);
+  assert.deepEqual(await client.request('echo', { alive: true }), { alive: true });
+});

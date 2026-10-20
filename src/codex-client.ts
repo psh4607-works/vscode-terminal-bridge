@@ -9,7 +9,8 @@ import { CodexProxy } from './codex-proxy';
 
 const START_TIMEOUT = 15000;
 const REQUEST_TIMEOUT = 15000;
-const MAX_FRAME = 8 * 1024 * 1024;
+// Match the native Codex remote client limit (app-server-client/src/remote.rs).
+const MAX_FRAME = 128 * 1024 * 1024;
 const MAX_REQUEST = 256 * 1024;
 const MAX_PENDING = 64;
 function failure(code: string, message: string) { return Object.assign(new Error(message), { code }); }

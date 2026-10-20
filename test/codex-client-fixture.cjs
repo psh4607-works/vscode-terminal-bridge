@@ -33,7 +33,7 @@ wss.on('connection', socket => socket.on('message', bytes => {
   const respond = result => socket.send(JSON.stringify({ id: message.id, result }));
   if (message.method === 'initialize') { initializes++; record(); if (mode === 'initialize-disconnect') socket.terminate(); else respond({ initialized: true }); }
   else if (message.method === 'initialized') return;
-  else if (['thread/resume', 'thread/start', 'thread/fork'].includes(message.method)) setTimeout(() => respond({ thread: { id: message.params.threadId ?? 'new-thread' } }), message.params.delay ?? 0);
+  else if (['thread/resume', 'thread/start', 'thread/fork'].includes(message.method)) setTimeout(() => respond({ thread: { id: message.params.threadId ?? 'new-thread', status: { type: 'idle' } } }), message.params.delay ?? 0);
   else if (message.method === 'thread/unsubscribe') respond({ status: 'unsubscribed' });
   else if (message.method === 'turn/start' || message.method === 'turn/steer') respond({ turn: { id: 'native-turn', status: 'inProgress' } });
   else if (message.method === 'complete') {
@@ -55,7 +55,13 @@ wss.on('connection', socket => socket.on('message', bytes => {
     respond({ sent: true });
   } else if (message.method === 'disconnect') socket.close();
   else if (message.method === 'malformed') socket.send('{');
-  else if (message.method === 'large') socket.send('x'.repeat(8 * 1024 * 1024 + 1));
+  else if (message.method === 'large') {
+    const header = Buffer.alloc(10); header[0] = 0x81; header[1] = 127;
+    header.writeBigUInt64BE(BigInt(128 * 1024 * 1024 + 1), 2); socket._socket.write(header);
+  } else if (message.method === 'largeNotification') {
+    socket.send(JSON.stringify({ method: 'item/agentMessage/delta', params: { threadId: 'fixture', delta: 'x'.repeat(17 * 1024 * 1024) } }));
+    respond({ sent: true });
+  }
   else if (!message.method) process.exit(42); // An automatic approval response is a test failure.
 }));
 if (mode === 'symlink') { fs.symlinkSync('/tmp/nonexistent-codex-fixture', socketPath); setInterval(() => {}, 1000); }

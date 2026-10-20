@@ -3,8 +3,9 @@ import { createServer, type Server } from 'node:http';
 import * as fs from 'node:fs/promises';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const MAX_FRAME = 8 * 1024 * 1024;
-const MAX_BUFFER = 16 * 1024 * 1024;
+// Match the native Codex remote client frame/message limit (app-server-client/src/remote.rs).
+const MAX_FRAME = 128 * 1024 * 1024;
+const MAX_BUFFER = 2 * MAX_FRAME;
 const MAX_PENDING = 64;
 const key = (id: unknown) => JSON.stringify(id);
 const validId = (id: unknown) => typeof id === 'string' || typeof id === 'number';
@@ -120,7 +121,7 @@ export class CodexProxy extends EventEmitter {
         if (generation === this.generation) {
           const thread = message.result?.thread;
           if (!message.error && typeof thread?.id === 'string' && thread.id.length <= 128) {
-            this.bound = thread.id; this.blocked = thread.status?.type === 'active';
+            this.bound = thread.id; this.blocked = thread.status?.type !== 'idle';
           } else this.revoke();
         }
         this.changed();
