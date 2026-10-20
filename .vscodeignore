@@ -1,0 +1,12 @@
+.git/**
+.test-runtime/**
+.vscode-test/**
+artifacts/**
+node_modules/**
+src/**
+test/**
+scripts/**
+tsconfig.json
+package-lock.json
+**/*.map
+*.vsix

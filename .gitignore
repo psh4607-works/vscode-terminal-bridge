@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.vsix
+.test-runtime/
+.vscode-test/
+artifacts/

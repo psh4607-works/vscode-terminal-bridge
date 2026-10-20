@@ -1,0 +1,74 @@
+{
+  "name": "vscode-terminal-bridge",
+  "displayName": "Terminal Bridge",
+  "description": "Local JSON CLI for observing and controlling VS Code terminals.",
+  "publisher": "seongho",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0",
+    "node": ">=22"
+  },
+  "main": "./dist/extension.js",
+  "bin": {
+    "vscode-terminal": "./dist/cli.js"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "terminalBridge.showConnection",
+        "title": "Terminal Bridge: Show Connection"
+      },
+      {
+        "command": "terminalBridge.smartPaste",
+        "title": "Terminal Bridge: Smart Paste"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "terminalBridge.smartPaste",
+        "key": "ctrl+shift+v",
+        "mac": "cmd+v",
+        "when": "isMac && terminalFocus && !terminalFindFocus && isWorkspaceTrusted && config.terminalBridge.smartPaste.enabled"
+      }
+    ],
+    "configuration": {
+      "title": "Terminal Bridge",
+      "properties": {
+        "terminalBridge.smartPaste.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "On macOS, paste copied files/folders as paths and clipboard images as temporary PNGs in local terminals. Plain text uses normal VS Code paste."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "test:integration": "npm run build && node scripts/integration.cjs",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.100.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^5.9.0"
+  }
+}
