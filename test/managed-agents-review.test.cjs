@@ -7,10 +7,10 @@ const { Mailbox } = require('../dist/mailbox');
 const { ManagedAgents } = require('../dist/managed-agents');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
-async function setup(t) {
+async function setup(t, options = {}) {
   const directory = await fs.mkdtemp('/tmp/vta-review-'), mailbox = new Mailbox(directory), clients = [];
   const manager = new ManagedAgents({ windowId: randomUUID(), directory, mailbox, cliPath: '/tmp/cli.js', intervalMs: 0,
-    resolveNode:async()=>'/verified/node',createClient: async () => {
+    resolveNode:options.resolveNode ?? (async()=>'/verified/node'),createClient: async () => {
       const c = new EventEmitter(); clients.push(c); c.closed = false; c.endpoint = 'unix:///tmp/fake.sock';
       c.canWake = () => true; c.threadId = randomUUID(); c.calls = []; c.close = async () => { c.closed = true; c.emit('closed'); };
       c.request = async (method, params) => {
@@ -93,6 +93,22 @@ test('a failed preparation can be retried after correcting its environment', asy
   input.cwd += '/later';
   await assert.rejects(f.manager.start(input), { code: 'ENOENT' });
   await fs.mkdir(input.cwd);
+  const agent = await f.manager.start(input);
+  assert.equal(agent.state, 'starting');
+  assert.equal((await f.manager.start(input)).id, agent.id);
+});
+
+test('runtime validation rejects before registration and can retry the same request after correction', async t => {
+  let failRuntime = true;
+  const f = await setup(t, { resolveNode: async () => {
+    if (failRuntime) throw Object.assign(Error('unavailable'), { code: 'NODE_EXECUTABLE_NOT_FOUND' });
+    return '/verified/node';
+  } });
+  const input = f.input();
+  await assert.rejects(f.manager.start(input), { code: 'NODE_EXECUTABLE_NOT_FOUND' });
+  assert.equal(f.clients.length, 0);
+  assert.equal((await f.mailbox.agents()).agents.length, 0);
+  failRuntime = false;
   const agent = await f.manager.start(input);
   assert.equal(agent.state, 'starting');
   assert.equal((await f.manager.start(input)).id, agent.id);

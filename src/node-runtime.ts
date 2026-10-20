@@ -5,7 +5,7 @@ import * as path from 'node:path';
 
 function failure(code: string, message: string) { return Object.assign(new Error(message), { code }); }
 
-export async function resolveNodeRuntime(value = 'node'): Promise<string> {
+export async function resolveNodeRuntime(value = 'node', cwd?: string): Promise<string> {
   if (typeof value !== 'string' || !value.trim() || value.includes('\0') || (value.includes(path.sep) && !path.isAbsolute(value)))
     throw failure('INVALID_PARAMS', 'Node executable must be an absolute path or a bare executable name');
   const candidates = path.isAbsolute(value) ? [value] : (process.env.PATH ?? '').split(path.delimiter)
@@ -16,13 +16,15 @@ export async function resolveNodeRuntime(value = 'node'): Promise<string> {
       const actual = await fs.realpath(candidate);
       if (!(await fs.stat(actual)).isFile()) continue;
       await fs.access(actual, constants.X_OK);
-      resolved = actual;
+      // Keep the invocation name: runtime-manager shims dispatch using argv[0].
+      resolved = candidate;
       break;
     } catch {}
   }
   if (!resolved) throw failure('NODE_EXECUTABLE_NOT_FOUND', 'Node executable was not found or is not executable');
   const output = await new Promise<string>((resolve, reject) => {
-    execFile(resolved!, ['--version'], { timeout: 5000, maxBuffer: 1024, encoding: 'utf8', killSignal: 'SIGKILL', shell: false }, (error, stdout) => {
+    // Leave room for a structured rejection within the bridge's five-second request budget.
+    execFile(resolved!, ['--version'], { cwd, timeout: 2000, maxBuffer: 1024, encoding: 'utf8', killSignal: 'SIGKILL', shell: false }, (error, stdout) => {
       if (error) reject(failure('NODE_RUNTIME_FAILED', 'Node version verification failed or exceeded its limits'));
       else resolve(stdout.trim());
     });

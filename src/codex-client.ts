@@ -199,7 +199,7 @@ async function resolveExecutable(value: string): Promise<string> {
   if (value.includes(path.sep) && !path.isAbsolute(value)) throw failure('INVALID_PARAMS', 'Executable paths must be absolute');
   const candidates = path.isAbsolute(value) ? [value] : (process.env.PATH ?? '').split(path.delimiter).filter(path.isAbsolute).map(folder => path.join(folder, value));
   for (const candidate of candidates) {
-    try { if ((await fs.stat(candidate)).isFile()) { await fs.access(candidate, constants.X_OK); return await fs.realpath(candidate); } } catch {}
+    try { if ((await fs.stat(candidate)).isFile()) { await fs.access(candidate, constants.X_OK); return candidate; } } catch {}
   }
   throw failure('CODEX_EXECUTABLE_NOT_FOUND', 'Codex executable was not found or is not executable');
 }

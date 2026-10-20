@@ -126,3 +126,15 @@ test('close is idempotent even when a closed listener calls close synchronously'
   assert.equal(listenerClose, closing);
   await closing;
 });
+test('configured Codex executable preserves the invoked basename for version-manager shims', async t => {
+  const directory = await fs.mkdtemp('/tmp/vtc-shim-');
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const target = path.join(directory, 'shim'), alias = path.join(directory, 'codex');
+  const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+  await fs.writeFile(target, '#!/bin/sh\n[ "${0##*/}" = codex ] || exit 42\nexec ' + quote(process.execPath) + ' ' + quote(executable) + ' "$@"\n', { mode: 0o700 });
+  await fs.symlink(target, alias);
+  const client = await CodexClient.start({ cwd: directory, executable: alias });
+  t.after(() => client.close());
+  assert.equal(client.executable, alias);
+  assert.equal(client.closed, false);
+});

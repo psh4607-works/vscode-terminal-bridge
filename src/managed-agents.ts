@@ -18,7 +18,7 @@ interface Launch { requestId: string; name: string; cwd: string; model?: string 
 interface Binding { id: string; dispose(): void }
 interface PendingDelivery { id: string; turnId?: string; started: boolean; deadline: number }
 interface Record {
-  id: string; runId: string; input: Launch; state: State; threadId?: string; terminal?: Binding; client?: Client; nodePath?: string;
+  id: string; runId: string; input: Launch; state: State; nodePath: string; threadId?: string; terminal?: Binding; client?: Client;
   error?: string; pending?: PendingDelivery; latestMessageId?: string; starting: Promise<void>;
   pumping: boolean; dirty: boolean; revision?: string; threadStatus: any;
   turns: Map<string, { started: boolean; status?: string }>;
@@ -74,7 +74,10 @@ export class ManagedAgents {
   }
   private async prepare(input: Launch) {
     if (!(await fs.stat(input.cwd)).isDirectory()) fail('INVALID_PARAMS', 'cwd must be an existing directory');
-    const record: Record = { id: randomUUID(), runId: randomUUID(), input, state: 'starting',
+    const configuredNode = typeof this.options.nodePath === 'function' ? this.options.nodePath() : this.options.nodePath;
+    const nodePath = await (this.options.resolveNode ?? resolveNodeRuntime)(configuredNode, input.cwd);
+    if (this.disposed) fail('BRIDGE_CLOSED', 'Agent manager is closed');
+    const record: Record = { id: randomUUID(), runId: randomUUID(), input, nodePath, state: 'starting',
       starting: Promise.resolve(), pumping: false, dirty: true, threadStatus: { type: 'notLoaded' },
       turns: new Map(), writes: Promise.resolve(), stopped: false };
     await this.options.mailbox.register(record.id, input.name);
@@ -89,12 +92,9 @@ export class ManagedAgents {
     return `${this.cliCommand(record)} message list ${record.id}`;
   }
   private cliCommand(record: Record) {
-    return `${quote(record.nodePath!)} ${quote(this.options.cliPath)} --directory ${quote(this.options.directory)}`;
+    return `${quote(record.nodePath)} ${quote(this.options.cliPath)} --directory ${quote(this.options.directory)}`;
   }
   private async launch(record: Record) {
-    const nodePath = typeof this.options.nodePath === 'function' ? this.options.nodePath() : this.options.nodePath;
-    record.nodePath = await (this.options.resolveNode ?? resolveNodeRuntime)(nodePath);
-    if (record.stopped || this.disposed) return;
     const executable = typeof this.options.codexPath === 'function' ? this.options.codexPath() : this.options.codexPath;
     const client = await (this.options.createClient ?? CodexClient.start)({ cwd: record.input.cwd,
       executable, model: record.input.model });
