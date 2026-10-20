@@ -101,8 +101,11 @@ test('accepted messages remain readable after the mailbox grows beyond 10000 rec
   for (let offset = 0; offset < 10000; offset += 100) {
     await Promise.all(Array.from({ length: 100 }, (_, i) => {
       const id = `00000000-0000-0000-0000-${String(offset + i).padStart(12, '0')}`;
-      return fs.writeFile(path.join(folder, id + '.json'), JSON.stringify({ id, from, to, text: 'old',
-        createdAt: '2026-01-01T00:00:00.000Z' }), { mode: 0o600 });
+      const bytes = JSON.stringify({ id, from, to, text: 'old', createdAt: '2026-01-01T00:00:00.000Z' });
+      return Promise.all([
+        fs.writeFile(path.join(folder, id + '.json'), bytes, { mode: 0o600 }),
+        fs.writeFile(path.join(directory, 'mailbox/requests', id + '.json'), bytes, { mode: 0o600 }),
+      ]);
     }));
   }
   const sent = await box.send({ id: randomUUID(), from, to, text: 'newly accepted' });
@@ -156,9 +159,7 @@ test('a corrupt message in another inbox cannot block the intended recipient', a
   const bad = await box.send({ id: randomUUID(), from, to: first, text: 'damaged later' });
   const good = await box.send({ id: randomUUID(), from, to: second, text: 'still readable' });
   const partitioned = path.join(directory, 'mailbox/messages', first, bad.id + '.json');
-  const flat = path.join(directory, 'mailbox/messages', bad.id + '.json');
-  const damaged = await fs.stat(partitioned).then(() => partitioned, () => flat);
-  await fs.writeFile(damaged, '{');
+  await fs.writeFile(partitioned, '!', { flag: 'r+' });
   const inbox = await box.messages({ agentId: second });
   assert.equal(inbox.messages[0].id, good.id);
   await assert.rejects(box.messages({ agentId: first }), { code: 'MAILBOX_CORRUPT' });

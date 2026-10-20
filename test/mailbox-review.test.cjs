@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
 const { Mailbox } = require('../dist/mailbox');
 
 async function fixture(t) {
@@ -104,4 +105,57 @@ test('legacy flat messages fail explicitly and preserve the original bytes', asy
   ]) await assert.rejects(operation(), { code: 'MAILBOX_LAYOUT_UNSUPPORTED' });
   assert.equal(await fs.readFile(filename, 'utf8'), original);
   assert.deepEqual(await fs.readdir(folder), [id + '.json']);
+});
+
+test('invalid filenames cannot orphan a concurrently failing record read', async t => {
+  const { directory, box } = await fixture(t);
+  const id = randomUUID();
+  await box.register(id, 'corrupt fixture');
+  const folder = path.join(directory, 'mailbox/agents');
+  await fs.writeFile(path.join(folder, id + '.json'), '{');
+  await fs.writeFile(path.join(folder, 'invalid-name.json'), '{}', { mode: 0o600 });
+  const script = `
+    const fs = require('node:fs/promises');
+    const { Mailbox } = require(process.argv[1]);
+    const original = fs.readdir;
+    fs.readdir = async function(folder, ...args) {
+      if (folder === process.argv[3]) return [process.argv[4] + '.json', 'invalid-name.json'];
+      return original.call(this, folder, ...args);
+    };
+    new Mailbox(process.argv[2]).agents().then(
+      () => { console.log(JSON.stringify({ unexpectedSuccess: true })); process.exitCode = 2; },
+      error => console.log(JSON.stringify({ error: { code: error.code } }))
+    );
+  `;
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--unhandled-rejections=strict', '-e', script,
+      path.resolve(__dirname, '../dist/mailbox.js'), directory, folder, id]);
+    let stdout = '', stderr = '';
+    child.stdout.on('data', data => stdout += data);
+    child.stderr.on('data', data => stderr += data);
+    child.on('error', reject);
+    child.on('close', code => resolve({ code, stdout, stderr }));
+  });
+  assert.deepEqual(JSON.parse(result.stdout), { error: { code: 'MAILBOX_CORRUPT' } });
+  assert.equal(result.code, 0, 'caught validation error must not leave orphan rejection: ' + result.stderr);
+  assert.equal(result.stderr, '');
+});
+
+test('message lists verify canonical contents before exposing schema-valid inbox records', async t => {
+  for (const field of ['text', 'from', 'createdAt', 'missing canonical']) {
+    await t.test(field, async t => {
+      const { directory, box } = await fixture(t);
+      const from = randomUUID(), to = randomUUID(), id = randomUUID();
+      await box.register(from, 'sender'); await box.register(to, 'recipient');
+      const message = await box.send({ id, from, to, text: 'authentic payload' });
+      if (field === 'missing canonical') {
+        await fs.unlink(path.join(directory, 'mailbox/requests', id + '.json'));
+      } else {
+        const replacement = field === 'text' ? 'malicious payload' : field === 'from' ? randomUUID() : '2000-01-01T00:00:00.000Z';
+        await fs.writeFile(path.join(directory, 'mailbox/messages', to, id + '.json'),
+          JSON.stringify({ ...message, [field]: replacement }), { flag: 'r+' });
+      }
+      await assert.rejects(box.messages({ agentId: to }), { code: 'MAILBOX_CORRUPT' });
+    });
+  }
 });

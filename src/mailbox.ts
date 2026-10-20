@@ -114,12 +114,11 @@ export class Mailbox {
     const folder = await this.folder(kind, false, recipient);
     if (!folder) return [];
     const names = (await fs.readdir(folder)).filter(name => name.endsWith('.json'));
+    const ids = names.map(name => name.slice(0, -5));
+    if (ids.some(recordId => !UUID.test(recordId))) fail('MAILBOX_CORRUPT', 'Unexpected mailbox record filename');
     const records: T[] = [];
-    for (let offset = 0; offset < names.length; offset += 8) {
-      const batch = await Promise.all(names.slice(offset, offset + 8).map(name => {
-        if (!UUID.test(name.slice(0, -5))) fail('MAILBOX_CORRUPT', 'Unexpected mailbox record filename');
-        return this.read(folder, name.slice(0, -5), validate);
-      }));
+    for (let offset = 0; offset < ids.length; offset += 8) {
+      const batch = await Promise.all(ids.slice(offset, offset + 8).map(recordId => this.read(folder, recordId, validate)));
       for (const record of batch) if (record) records.push(record);
     }
     return records;
@@ -169,7 +168,16 @@ export class Mailbox {
       fail('INVALID_PARAMS', 'Invalid message cursor; use nextCursor from a previous response');
     if (options.all !== undefined && typeof options.all !== 'boolean') fail('INVALID_PARAMS', 'all must be a boolean');
     await this.checkLayout();
-    const records = (await this.records('messages', isMessage, options.agentId)).filter(message => {
+    const inbox = await this.records('messages', isMessage, options.agentId);
+    const requests = await this.folder('requests');
+    for (let offset = 0; offset < inbox.length; offset += 8) {
+      await Promise.all(inbox.slice(offset, offset + 8).map(async message => {
+        const canonical = await this.read(requests, message.id, isMessage);
+        if (!canonical || !sameMessage(message, canonical) || message.createdAt !== canonical.createdAt)
+          fail('MAILBOX_CORRUPT', 'Inbox record does not match the canonical request');
+      }));
+    }
+    const records = inbox.filter(message => {
       if (message.to !== options.agentId) fail('MAILBOX_CORRUPT', 'Message is stored in the wrong recipient inbox');
       return messageKey(message) > cursor;
     }).sort((a, b) => compare(messageKey(a), messageKey(b)));
