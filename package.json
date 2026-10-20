@@ -3,7 +3,7 @@
   "displayName": "Terminal Bridge",
   "description": "Local JSON CLI for observing and controlling VS Code terminals.",
   "publisher": "seongho",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "engines": {
