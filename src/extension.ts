@@ -27,6 +27,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const windowId = randomUUID();
   const mailbox = new Mailbox(directory);
   managed = new ManagedAgents({ windowId, directory, mailbox, cliPath: join(__dirname, 'cli.js'),
+    nodePath: () => vscode.workspace.getConfiguration?.('terminalBridge').get<string>('nodePath', 'node') ?? 'node',
     codexPath: () => vscode.workspace.getConfiguration?.('terminalBridge').get<string>('codexPath', 'codex') ?? 'codex',
     createTerminal: options => {
       const terminal = vscode.window.createTerminal({ name: options.name, cwd: options.cwd,

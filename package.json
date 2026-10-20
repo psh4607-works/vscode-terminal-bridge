@@ -59,6 +59,12 @@
           "default": "codex",
           "scope": "application",
           "description": "Codex executable for extension-managed agents. Use codex from the VS Code process PATH or an absolute executable path. Applies to new agents."
+        },
+        "terminalBridge.nodePath": {
+          "type": "string",
+          "default": "node",
+          "scope": "application",
+          "description": "Node.js 22+ executable for managed agent mailbox commands. Use node from PATH or an absolute executable path. Checked before starting each agent."
         }
       }
     }

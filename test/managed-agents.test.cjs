@@ -27,7 +27,7 @@ async function fixture(t) {
  };
  let terminalCreates=0, terminalClosed=0, namedAtCreation=false;
  const manager=new ManagedAgents({windowId:randomUUID(),directory,mailbox,cliPath:'/tmp/cli.js',intervalMs:0,
-  createClient:async()=>client,createTerminal:()=>{namedAtCreation=client.calls.some(x=>x.method==='thread/name/set');terminalCreates++;return {id:randomUUID(),dispose(){terminalClosed++;}};}});
+  resolveNode:async()=>'/verified/node',createClient:async()=>client,createTerminal:()=>{namedAtCreation=client.calls.some(x=>x.method==='thread/name/set');terminalCreates++;return {id:randomUUID(),dispose(){terminalClosed++;}};}});
  t.after(async()=>{await manager.dispose();await fs.rm(directory,{recursive:true,force:true});});
  const input={requestId:randomUUID(),name:'worker',cwd:directory};
  const agent=await manager.start(input);
@@ -111,4 +111,10 @@ test('native TUI is launched only after naming materializes its fresh thread',as
  const f=await fixture(t);
  assert.equal(f.counts().namedAtCreation,true);
  assert.deepEqual(f.client.calls.find(x=>x.method==='thread/name/set').params,{threadId:f.client.threadId,name:f.input.name});
+});
+test('mailbox instructions use the verified runtime path for reads and acknowledgements',async t=>{
+ const f=await fixture(t);
+ const instruction=f.client.calls.find(x=>x.method==='thread/start').params.developerInstructions;
+ assert.ok(instruction.includes("'/verified/node' '/tmp/cli.js'"));
+ assert.ok(!instruction.includes('acknowledge with node '));
 });

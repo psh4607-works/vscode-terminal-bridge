@@ -10,7 +10,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => resolve =
 async function setup(t) {
   const directory = await fs.mkdtemp('/tmp/vta-review-'), mailbox = new Mailbox(directory), clients = [];
   const manager = new ManagedAgents({ windowId: randomUUID(), directory, mailbox, cliPath: '/tmp/cli.js', intervalMs: 0,
-    createClient: async () => {
+    resolveNode:async()=>'/verified/node',createClient: async () => {
       const c = new EventEmitter(); clients.push(c); c.closed = false; c.endpoint = 'unix:///tmp/fake.sock';
       c.canWake = () => true; c.threadId = randomUUID(); c.calls = []; c.close = async () => { c.closed = true; c.emit('closed'); };
       c.request = async (method, params) => {
@@ -87,4 +87,13 @@ test('completed notification before turn-start RPC reply is persisted after corr
 test('launch request IDs reject coercible non-string values before deduplication', async t => {
   const f = await setup(t), input = f.input();
   await assert.rejects(f.manager.start({ ...input, requestId: [input.requestId] }), { code: 'INVALID_PARAMS' });
+});
+test('a failed preparation can be retried after correcting its environment', async t => {
+  const f = await setup(t), input = f.input();
+  input.cwd += '/later';
+  await assert.rejects(f.manager.start(input), { code: 'ENOENT' });
+  await fs.mkdir(input.cwd);
+  const agent = await f.manager.start(input);
+  assert.equal(agent.state, 'starting');
+  assert.equal((await f.manager.start(input)).id, agent.id);
 });

@@ -18,6 +18,7 @@ const { runTests } = require('@vscode/test-electron');
     'terminal.integrated.defaultProfile.osx': 'zsh',
     'terminal.integrated.profiles.osx': { zsh: { path: '/bin/zsh', args: [] } },
     'update.mode': 'none', 'telemetry.telemetryLevel': 'off',
+    'terminalBridge.nodePath': process.execPath,
     ...(process.env.BRIDGE_TEST_CODEX_PATH ? { 'terminalBridge.codexPath': process.env.BRIDGE_TEST_CODEX_PATH } : {})
   }));
   try {

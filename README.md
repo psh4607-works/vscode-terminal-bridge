@@ -110,9 +110,13 @@ vscode-terminal --window WINDOW_ID agent stop AGENT_UUID
 
 Codex 실행 파일은 기본적으로 VS Code 프로세스의 `PATH`에서 `codex`를 찾습니다. 다른 실행 파일을 사용하려면 애플리케이션 설정 `terminalBridge.codexPath`에 절대 경로를 지정합니다. 설정은 새 에이전트부터 적용됩니다. private Unix socket의 app-server와 remote TUI를 지원하는 Codex가 설치되어 있어야 합니다.
 
+메시지함 명령용 Node.js도 시작 전에 실행 경로와 버전(22 이상)을 확인합니다. 확인한 절대 경로를 에이전트 지침에 사용합니다. GUI에서 실행한 VS Code가 Node를 찾지 못하면 `terminalBridge.nodePath`에 Node 실행 파일의 절대 경로를 지정합니다.
+
 실제 연결 검증 버전은 Codex 0.161.0과 macOS VS Code 1.141.0입니다. 관리형 TUI는 시작 시 업데이트 선택 화면을 띄우지 않도록 해당 실행에만 `check_for_update_on_startup=false`를 적용합니다. Codex의 로그인·모델·승인·샌드박스 설정은 기존 설정을 따릅니다.
 
 시작 응답의 `state: starting`은 준비 중이라는 뜻입니다. `agent status`에서 준비 결과를 확인합니다. 같은 창의 확장이 살아 있는 동안에는 같은 launch request ID와 옵션으로 재시도해도 동일한 시작 결과를 반환합니다. 다른 옵션을 넣으면 `ID_CONFLICT`입니다. 확장 재시작 이후에는 이전 launch request ID로 복구하거나 자동 재연결하지 않습니다.
+
+접수 전 경로·메시지함 준비가 실패한 요청은 원인을 고친 뒤 같은 ID로 재시도할 수 있습니다. 접수한 요청은 종료된 뒤에도 같은 ID가 새 에이전트를 만들지 않도록 유지합니다. 창당 동시 관리 한도는 8개, 접수 이력 한도는 1,000개입니다. 이력 한도에 도달하면 실행 중인 작업을 마친 뒤 창을 reload해 새 요청 ID를 사용합니다.
 
 새 메시지가 저장되면 확장은 에이전트 상태를 확인하고, 유휴 상태일 때 메시지함을 읽으라는 짧은 알림으로 새 turn을 시작합니다. 처리 중이거나 사용자 승인·답변을 기다릴 때는 대기합니다. 메시지 본문은 메시지함에서 읽으며, 승인을 자동으로 허용하거나 다른 터미널에 키 입력을 보내지 않습니다. inbox가 바뀌지 않은 유휴 poll에서는 전체 메시지를 반복 조회하지 않습니다.
 

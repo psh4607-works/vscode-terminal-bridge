@@ -20,7 +20,7 @@ test('a managed submitted turn reports waiting while approval is pending',async 
   throw Error(method);
  };
  const manager=new ManagedAgents({windowId:randomUUID(),directory,mailbox,cliPath:'/tmp/cli.js',intervalMs:0,
-  createClient:async()=>client,createTerminal:()=>({id:randomUUID(),dispose(){}})});
+  resolveNode:async()=>'/verified/node',createClient:async()=>client,createTerminal:()=>({id:randomUUID(),dispose(){}})});
  t.after(async()=>{await manager.dispose();await fs.rm(directory,{recursive:true,force:true});});
  const agent=await manager.start({requestId:randomUUID(),name:'fixture',cwd:directory});
  for(let n=0;n<100&&manager.status(agent.id).state==='starting';n++)await tick();
