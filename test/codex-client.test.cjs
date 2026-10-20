@@ -138,3 +138,20 @@ test('configured Codex executable preserves the invoked basename for version-man
   assert.equal(client.executable, alias);
   assert.equal(client.closed, false);
 });
+
+
+test('retries transport resets before initialization but never replays initialize or retries auth failures', async t => {
+  for (const model of ['startup-reset', 'startup-denied', 'initialize-disconnect']) await t.test(model, async t => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'vtc-startup-'));
+    t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+    if (model === 'startup-reset') {
+      const client = await CodexClient.start({ cwd, executable, model });
+      t.after(() => client.close());
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(cwd, 'startup-counts.json'))), { upgrades: 3, initializes: 1 });
+      await client.close();
+    } else {
+      await assert.rejects(CodexClient.start({ cwd, executable, model }), { code: model === 'startup-denied' ? 'CODEX_START_FAILED' : 'CODEX_DISCONNECTED' });
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(cwd, 'startup-counts.json'))), { upgrades: 1, initializes: model === 'startup-denied' ? 0 : 1 });
+    }
+  });
+});

@@ -25,7 +25,8 @@ const { runTests } = require('@vscode/test-electron');
       vscodeExecutablePath: process.env.BRIDGE_VSCODE_PATH || '/Applications/Visual Studio Code.app/Contents/MacOS/Code',
       extensionDevelopmentPath: root,
       extensionTestsPath: path.join(root, 'test/integration/index.cjs'),
-      extensionTestsEnv: { VSCODE_TERMINAL_BRIDGE_DIR: directory, BRIDGE_NODE_PATH: process.execPath, BRIDGE_TEST_ROOT: root,
+      extensionTestsEnv: { PATH: path.dirname(process.execPath) + path.delimiter + (process.env.PATH || ''),
+        VSCODE_TERMINAL_BRIDGE_DIR: directory, BRIDGE_NODE_PATH: process.execPath, BRIDGE_TEST_ROOT: root,
         BRIDGE_TEST_WORKSPACE: workspace, BRIDGE_TEST_CODEX: process.env.BRIDGE_TEST_CODEX === '1' ? '1' : '0',
         BRIDGE_TEST_CODEX_MODEL: process.env.BRIDGE_TEST_CODEX_MODEL || '' },
       launchArgs: [workspace, '--user-data-dir', userData, '--extensions-dir', path.join(runtime, 'extensions'), '--disable-extensions', '--skip-welcome', '--skip-release-notes', '--disable-updates', '--disable-workspace-trust', '--new-window']

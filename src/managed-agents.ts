@@ -45,6 +45,7 @@ export class ManagedAgents {
   private disposed = false;
   private preparing = 0;
   constructor(private options: Options) {
+    this.options = { ...options, directory: path.resolve(options.directory) };
     const interval = options.intervalMs ?? 1000;
     if (interval > 0) { this.timer = setInterval(() => { void this.poll(); }, interval); this.timer.unref(); }
   }
@@ -210,8 +211,13 @@ export class ManagedAgents {
         if (!this.ready(r)) { r.dirty = true; return; }
         r.threadStatus = live.thread?.status; this.updateState(r);
         if (!this.ready(r)) { r.dirty = true; return; }
-        await this.options.mailbox.beginDelivery({ id: message.id, agentId: r.id, runId: r.runId,
-          threadId: r.threadId!, windowId: this.options.windowId });
+        try {
+          await this.options.mailbox.beginDelivery({ id: message.id, agentId: r.id, runId: r.runId,
+            threadId: r.threadId!, windowId: this.options.windowId });
+        } catch (error) {
+          if ((error as any).code === 'MESSAGE_ACKNOWLEDGED') continue;
+          throw error;
+        }
         // The durable intent precedes submission. An interrupted/ambiguous attempt is never replayed automatically.
         r.latestMessageId = message.id;
         if (!this.ready(r)) {

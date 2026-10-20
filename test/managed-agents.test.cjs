@@ -118,3 +118,32 @@ test('mailbox instructions use the verified runtime path for reads and acknowled
  assert.ok(instruction.includes("'/verified/node' '/tmp/cli.js'"));
  assert.ok(!instruction.includes('acknowledge with node '));
 });
+
+test('acknowledgment after inbox snapshot skips the stale message and still wakes the next unread message', async t => {
+ const f=await fixture(t), first=await f.send(), second=await f.send();
+ const peer=new Mailbox(f.input.cwd), original=f.client.request;
+ let acknowledged=false;
+ f.client.request=async(method,params)=>{
+  if(method==='thread/read'&&!acknowledged){acknowledged=true;await peer.ack({id:first.id,agentId:f.agent.id});}
+  return original(method,params);
+ };
+ await f.manager.poll();
+ const starts=f.client.calls.filter(x=>x.method==='turn/start');
+ assert.deepEqual(starts.map(x=>x.params.clientUserMessageId),[second.id]);
+ assert.equal((await f.mailbox.delivery({id:first.id,agentId:f.agent.id})).stage,'queued');
+});
+
+test('acknowledgment completing just before attempt publication prevents automatic submission', async t => {
+ const f=await fixture(t), message=await f.send(), peer=new Mailbox(f.input.cwd);
+ const publish=f.mailbox.publish.bind(f.mailbox);
+ f.mailbox.publish=async(folder,value,validate)=>{
+  if(folder.endsWith('/delivery-attempts')) await peer.ack({id:message.id,agentId:f.agent.id});
+  return publish(folder,value,validate);
+ };
+ await f.manager.poll();
+ assert.equal(f.client.calls.filter(x=>x.method==='turn/start').length,0);
+ assert.equal(f.manager.status(f.agent.id).state,'idle');
+ assert.equal((await f.mailbox.messages({agentId:f.agent.id})).messages.length,0);
+ await f.manager.poll();
+ assert.equal(f.client.calls.filter(x=>x.method==='turn/start').length,0);
+});

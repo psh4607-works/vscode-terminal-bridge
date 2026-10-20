@@ -88,17 +88,40 @@ export class CodexClient extends EventEmitter {
         if (Date.now() >= deadline) throw failure('CODEX_START_TIMEOUT', 'Owned Codex server did not publish its socket');
         await pause(25);
       }
-      const socket = new WebSocket('ws+unix://' + socketPath + ':/', { maxPayload: MAX_FRAME,
-        handshakeTimeout: Math.max(1, deadline - Date.now()), perMessageDeflate: false });
-      client.socket = socket;
-      socket.on('message', (data, binary) => client.receive(data, binary));
-      socket.on('close', () => client.disconnected('CODEX_DISCONNECTED'));
-      socket.on('error', () => client.disconnected('CODEX_DISCONNECTED'));
-      await new Promise<void>((resolve, reject) => {
-        socket.once('open', resolve);
-        socket.once('error', () => reject(failure('CODEX_START_FAILED', 'Cannot connect to owned Codex server')));
-        socket.once('close', () => reject(failure('CODEX_START_FAILED', 'Owned Codex connection closed during startup')));
-      });
+      let socket: WebSocket;
+      for (;;) {
+        if (client.closed || child.exitCode !== null || child.signalCode !== null)
+          throw failure('CODEX_START_FAILED', 'Owned Codex server exited before connecting');
+        if (Date.now() >= deadline) throw failure('CODEX_START_TIMEOUT', 'Owned Codex connection did not become ready');
+        socket = new WebSocket('ws+unix://' + socketPath + ':/', { maxPayload: MAX_FRAME,
+          handshakeTimeout: Math.max(1, deadline - Date.now()), perMessageDeflate: false });
+        client.socket = socket;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const failed = (error: Error) => reject(error);
+            const closed = () => reject(failure('CODEX_START_FAILED', 'Owned Codex connection closed during startup'));
+            socket.once('error', failed);
+            socket.once('close', closed);
+            socket.once('open', () => {
+              socket.off('error', failed); socket.off('close', closed);
+              // Established connections never retry: initialization and requests may already have effects.
+              socket.on('message', (data, binary) => client.receive(data, binary));
+              socket.on('close', () => client.disconnected('CODEX_DISCONNECTED'));
+              socket.on('error', () => client.disconnected('CODEX_DISCONNECTED'));
+              resolve();
+            });
+          });
+          break;
+        } catch (error) {
+          socket.on('error', () => {});
+          socket.terminate();
+          const retryable = ['ECONNREFUSED', 'ECONNRESET', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '');
+          if (!retryable || client.closed || child.exitCode !== null || child.signalCode !== null)
+            throw failure('CODEX_START_FAILED', 'Cannot connect to owned Codex server');
+          if (Date.now() >= deadline) throw failure('CODEX_START_TIMEOUT', 'Owned Codex connection did not become ready');
+          await pause(Math.min(50, deadline - Date.now()));
+        }
+      }
       await client.request('initialize', { clientInfo: { name: 'vscode_terminal_bridge', title: 'Terminal Bridge', version: '0.4.0' }, capabilities: { experimentalApi: true } });
       socket.send(JSON.stringify({ method: 'initialized' }));
       if (client.closed) throw failure('CODEX_START_FAILED', 'Owned Codex connection closed during initialization');

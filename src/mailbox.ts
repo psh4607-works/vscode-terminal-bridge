@@ -270,14 +270,24 @@ export class Mailbox {
     return { ...attempt, stage: 'submission_unknown' };
   }
 
+  private async requireUnacknowledged(messageId: string, agentId: string) {
+    const receipt = await this.read(await this.folder('acks'), messageId, isReceipt);
+    if (receipt && receipt.agentId !== agentId) fail('MAILBOX_CORRUPT', 'Receipt does not match message recipient');
+    if (receipt) fail('MESSAGE_ACKNOWLEDGED', 'Message has already been acknowledged');
+  }
+
   async beginDelivery(input: { id: string; agentId: string; runId: string; threadId: string; windowId: string }): Promise<DeliveryState> {
     const candidate: DeliveryAttempt = { id: id(input.id), agentId: id(input.agentId), runId: id(input.runId),
       threadId: id(input.threadId), windowId: id(input.windowId), attemptedAt: new Date().toISOString() };
     await this.delivery(candidate);
+    await this.requireUnacknowledged(candidate.id, candidate.agentId);
     const stored = await this.publish(await this.folder('delivery-attempts', true), candidate, isDeliveryAttempt);
     if (stored.agentId !== candidate.agentId) fail('MAILBOX_CORRUPT', 'Delivery owner does not match message recipient');
     if (stored.runId !== candidate.runId || stored.threadId !== candidate.threadId || stored.windowId !== candidate.windowId)
       fail('DELIVERY_CONFLICT', 'Message already has an immutable delivery attempt owned by another run');
+    // Any ack completed before this publication is now visible. Keep the immutable attempt
+    // if the ack won this race, but never authorize a turn from a stale unread snapshot.
+    await this.requireUnacknowledged(candidate.id, candidate.agentId);
     return this.delivery(candidate);
   }
   async markDeliveryStarted(input: { id: string; agentId: string; runId: string; turnId: string }): Promise<DeliveryState> {

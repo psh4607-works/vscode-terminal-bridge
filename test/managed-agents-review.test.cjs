@@ -3,13 +3,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const execFile = require('node:util').promisify(require('node:child_process').execFile);
 const { Mailbox } = require('../dist/mailbox');
 const { ManagedAgents } = require('../dist/managed-agents');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 async function setup(t, options = {}) {
-  const directory = await fs.mkdtemp('/tmp/vta-review-'), mailbox = new Mailbox(directory), clients = [];
-  const manager = new ManagedAgents({ windowId: randomUUID(), directory, mailbox, cliPath: '/tmp/cli.js', intervalMs: 0,
+  if (options.relativeDirectory) await fs.mkdir(path.join(process.cwd(), '.test-runtime'), { recursive: true });
+  const directory = await fs.mkdtemp(options.relativeDirectory ? path.join(process.cwd(), '.test-runtime', 'relative-') : '/tmp/vta-review-'), mailbox = new Mailbox(directory), clients = [];
+  const manager = new ManagedAgents({ windowId: randomUUID(), directory: options.relativeDirectory ? path.relative(process.cwd(), directory) : directory,
+    mailbox, cliPath: options.cliPath ?? '/tmp/cli.js', nodePath: options.nodePath, intervalMs: 0,
     resolveNode:options.resolveNode ?? (async()=>'/verified/node'),createClient: async () => {
       const c = new EventEmitter(); clients.push(c); c.closed = false; c.endpoint = 'unix:///tmp/fake.sock';
       c.canWake = () => true; c.threadId = randomUUID(); c.calls = []; c.close = async () => { c.closed = true; c.emit('closed'); };
@@ -112,4 +116,22 @@ test('runtime validation rejects before registration and can retry the same requ
   const agent = await f.manager.start(input);
   assert.equal(agent.state, 'starting');
   assert.equal((await f.manager.start(input)).id, agent.id);
+});
+
+
+test('mailbox instructions resolve a relative bridge directory before running in the agent cwd', async t => {
+  const f = await setup(t, { relativeDirectory: true, cliPath: require.resolve('../dist/cli'), resolveNode: async () => process.execPath });
+  const { agent, client } = await f.start();
+  const message = await f.send(agent.id);
+  const instructions = client.calls.find(call => call.method === 'thread/start').params.developerInstructions;
+  const command = instructions.match(/Before work, after tests, and before your final response, run: (.*)\n/)[1];
+  const { stdout } = await execFile('/bin/sh', ['-c', command], { cwd: agent.cwd });
+  assert.equal(JSON.parse(stdout).messages[0].id, message.id);
+});
+
+test('runtime validation uses the configured executable and managed workspace cwd', async t => {
+  const calls = [];
+  const f = await setup(t, { nodePath: () => '/configured/node', resolveNode: async (...args) => { calls.push(args); return '/verified/node'; } });
+  const { agent } = await f.start();
+  assert.deepEqual(calls, [['/configured/node', agent.cwd]]);
 });

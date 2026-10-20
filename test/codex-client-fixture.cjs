@@ -5,7 +5,7 @@ const { WebSocketServer } = require('ws');
 const endpoint = process.argv[process.argv.indexOf('--listen') + 1];
 let socketPath = endpoint.slice('unix://'.length);
 const rendezvous = socketPath;
-const mode = ['protected-socket', 'ignore-term', 'unsafe-socket', 'symlink'].find(value => process.argv.includes('model=' + JSON.stringify(value))) ?? '';
+const mode = ['startup-reset', 'startup-denied', 'initialize-disconnect', 'protected-socket', 'ignore-term', 'unsafe-socket', 'symlink'].find(value => process.argv.includes('model=' + JSON.stringify(value))) ?? '';
 if (mode) fs.writeFileSync(require('node:path').join(process.cwd(), 'fixture-info.json'), JSON.stringify({ pid: process.pid, socketPath }));
 if (mode === 'ignore-term') process.on('SIGTERM', () => {});
 if (mode === 'protected-socket') {
@@ -16,11 +16,22 @@ if (mode === 'protected-socket') {
   fs.writeFileSync(path.join(process.cwd(), 'fixture-info.json'), JSON.stringify({ pid: process.pid, socketPath: rendezvous, physicalPath: socketPath }));
 }
 const server = http.createServer();
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ noServer: true });
+let upgrades = 0, initializes = 0;
+const record = () => {
+  if (['startup-reset', 'startup-denied', 'initialize-disconnect'].includes(mode))
+    fs.writeFileSync(require('node:path').join(process.cwd(), 'startup-counts.json'), JSON.stringify({ upgrades, initializes }));
+};
+server.on('upgrade', (request, socket, head) => {
+  upgrades++; record();
+  if (mode === 'startup-reset' && upgrades <= 2) return socket.destroy();
+  if (mode === 'startup-denied') return socket.end('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n');
+  wss.handleUpgrade(request, socket, head, ws => wss.emit('connection', ws, request));
+});
 wss.on('connection', socket => socket.on('message', bytes => {
   const message = JSON.parse(bytes.toString());
   const respond = result => socket.send(JSON.stringify({ id: message.id, result }));
-  if (message.method === 'initialize') respond({ initialized: true });
+  if (message.method === 'initialize') { initializes++; record(); if (mode === 'initialize-disconnect') socket.terminate(); else respond({ initialized: true }); }
   else if (message.method === 'initialized') return;
   else if (['thread/resume', 'thread/start', 'thread/fork'].includes(message.method)) setTimeout(() => respond({ thread: { id: message.params.threadId ?? 'new-thread' } }), message.params.delay ?? 0);
   else if (message.method === 'thread/unsubscribe') respond({ status: 'unsubscribed' });
