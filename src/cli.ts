@@ -2,12 +2,13 @@
 import { discover, request, defaultDirectory } from './transport';
 import { Mailbox } from './mailbox';
 import { randomUUID } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 function invalid(message: string): never { throw Object.assign(new Error(message), { code: 'INVALID_ARGUMENT' }); }
 export async function main(args: string[]): Promise<void> {
     const options = new Map<string, string | boolean>();
     const positional: string[] = [];
     const flags = new Set(['allow-interrupt', 'enter', 'help', 'clean-shell', 'all']);
-    const values = new Set(['directory', 'window', 'name', 'cwd', 'command', 'text', 'cursor', 'limit', 'session', 'from', 'request-id', 'agent']);
+    const values = new Set(['directory', 'window', 'name', 'cwd', 'command', 'text', 'cursor', 'limit', 'session', 'from', 'request-id', 'agent', 'model']);
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === '-h') {
@@ -33,7 +34,7 @@ export async function main(args: string[]): Promise<void> {
             invalid('Unknown option ' + arg);
     }
     if (options.has('help')) {
-        console.log('vscode-terminal [--directory PATH] [--window ID] COMMAND\nCommands:\n  windows\n  list\n  create [--name NAME] [--cwd PATH] [--clean-shell]\n  execute TERMINAL --command CMD [--allow-interrupt]\n  read EXECUTION [--cursor N] [--limit N]\n  status EXECUTION\n  send TERMINAL --text TEXT [--enter]\n  interrupt TERMINAL\n  close TERMINAL\n  agent register TERMINAL --name NAME [--session UUID]\n  agent list [--cursor CURSOR] [--limit N]\n  message send RECIPIENT --from SENDER --text TEXT --request-id UUID\n  message list AGENT [--cursor CURSOR] [--limit N] [--all]\n  message ack MESSAGE --agent AGENT\nMailbox list/send/ack use the shared --directory, even when --window is supplied.\nRegistration requires a live terminal; --session preserves identity for retries. Messages never type into terminals.');
+        console.log('vscode-terminal [--directory PATH] [--window ID] COMMAND\nCommands:\n  windows\n  list\n  create [--name NAME] [--cwd PATH] [--clean-shell]\n  execute TERMINAL --command CMD [--allow-interrupt]\n  read EXECUTION [--cursor N] [--limit N]\n  status EXECUTION\n  send TERMINAL --text TEXT [--enter]\n  interrupt TERMINAL\n  close TERMINAL\n  agent register TERMINAL --name NAME [--session UUID]\n  agent list [--cursor CURSOR] [--limit N]\n  agent start --name NAME --cwd ABS --request-id UUID [--model MODEL]\n  agent status UUID\n  agent stop UUID\n  message send RECIPIENT --from SENDER --text TEXT --request-id UUID\n  message list AGENT [--cursor CURSOR] [--limit N] [--all]\n  message ack MESSAGE --agent AGENT\n  message delivery MESSAGE --agent AGENT\nMailbox list/send/ack/delivery use the shared --directory, even when --window is supplied.\nRegistration requires a live terminal; --session preserves identity for retries.\nOrdinary registered agents use disk-only messages. Managed agent start creates a Codex terminal and automatically wakes it with a mailbox pointer.\nMessage send persists to disk; it does not type into terminals. Approvals and questions remain in the Codex UI; they are never auto-approved.');
         return;
     }
     if (positional[0] === 'agent' || positional[0] === 'message') {
@@ -102,14 +103,31 @@ async function mailboxCommand(positional: string[], options: Map<string, string 
     const command = `${group} ${action}`;
     const allowed: Record<string, string[]> = {
         'agent register': ['name', 'session'], 'agent list': ['cursor', 'limit'],
-        'message send': ['from', 'text', 'request-id'], 'message list': ['cursor', 'limit', 'all'], 'message ack': ['agent'],
+        'agent start': ['name', 'cwd', 'request-id', 'model'], 'agent status': [], 'agent stop': [],
+        'message send': ['from', 'text', 'request-id'], 'message list': ['cursor', 'limit', 'all'], 'message ack': ['agent'], 'message delivery': ['agent'],
     };
     if (!allowed[command]) invalid('Unknown mailbox command; use --help');
-    if (extra.length || (command === 'agent list' ? id !== undefined : !id)) invalid('Invalid arguments for ' + command);
+    if (extra.length || (['agent list', 'agent start'].includes(command) ? id !== undefined : !id)) invalid('Invalid arguments for ' + command);
     for (const key of options.keys()) if (!['directory', 'window', ...allowed[command]].includes(key)) invalid('--' + key + ' is not valid for ' + command);
     const directory = options.get('directory') as string | undefined;
-    if (command === 'agent register') {
-        if (!options.has('name')) invalid('agent register requires --name');
+    if (['agent register', 'agent start', 'agent status', 'agent stop'].includes(command)) {
+        let params: Record<string, unknown>;
+        if (command === 'agent register') {
+            if (!options.has('name')) invalid('agent register requires --name');
+            params = { terminalId: id, id: options.get('session') ?? randomUUID(), name: options.get('name') };
+        } else if (command === 'agent start') {
+            for (const key of ['name', 'cwd', 'request-id']) if (!options.has(key)) invalid('agent start requires --' + key);
+            const name = options.get('name') as string, cwd = options.get('cwd') as string;
+            if (!name.trim() || name.length > 200) invalid('--name must be nonblank and at most 200 characters');
+            if (!isAbsolute(cwd)) invalid('--cwd must be an absolute path');
+            uuid(options.get('request-id'), '--request-id');
+            if (options.has('model') && !(options.get('model') as string).trim()) invalid('--model must be nonblank');
+            params = { requestId: options.get('request-id'), name, cwd };
+            if (options.has('model')) params.model = options.get('model');
+        } else {
+            uuid(id, 'agent ID');
+            params = { id };
+        }
         let windowId = options.get('window') as string | undefined;
         if (!windowId) {
             const windows = await discover(directory);
@@ -117,7 +135,7 @@ async function mailboxCommand(positional: string[], options: Map<string, string 
             if (windows.length !== 1) throw Object.assign(new Error('Multiple windows available; select --window ID'), { code: 'AMBIGUOUS_WINDOW' });
             windowId = windows[0].id;
         }
-        console.log(JSON.stringify(await request(windowId, 'agent.register', { terminalId: id, id: options.get('session') ?? randomUUID(), name: options.get('name') }, directory)));
+        console.log(JSON.stringify(await request(windowId, command.replace(' ', '.'), params, directory)));
         return;
     }
     const limit = options.get('limit');
@@ -131,10 +149,14 @@ async function mailboxCommand(positional: string[], options: Map<string, string 
         for (const key of ['from', 'text', 'request-id']) if (!options.has(key)) invalid('message send requires --' + key);
         result = await mailbox.send({ id: options.get('request-id') as string, from: options.get('from') as string, to: id, text: options.get('text') as string });
     } else {
-        if (!options.has('agent')) invalid('message ack requires --agent');
-        result = await mailbox.ack({ id, agentId: options.get('agent') as string });
+        if (!options.has('agent')) invalid(command + ' requires --agent');
+        const identity = { id, agentId: options.get('agent') as string };
+        result = command === 'message delivery' ? await mailbox.delivery(identity) : await mailbox.ack(identity);
     }
     console.log(JSON.stringify(result));
+}
+function uuid(value: unknown, name: string): void {
+    if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) invalid(name + ' must be a lowercase UUID');
 }
 if (require.main === module)
     void main(process.argv.slice(2)).catch((error: unknown) => { const e = error as {

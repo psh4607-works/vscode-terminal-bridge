@@ -6,14 +6,14 @@
 AI / shell → vscode-terminal CLI → private Unix socket → VS Code extension → Terminal API
 ```
 
-macOS와 Linux의 데스크톱 VS Code에서 동작합니다. 런타임 npm 의존성은 없으며 CLI에는 Node.js 22 이상이 필요합니다. 첫 버전은 CLI 연결을 제공합니다.
+macOS와 Linux의 데스크톱 VS Code에서 동작합니다. CLI에는 Node.js 22 이상이 필요합니다. 관리형 Codex 연결에 사용하는 `ws` 런타임 의존성은 VSIX에 함께 포함됩니다.
 
 ## 설치
 
 ```bash
 npm ci
 npm run package
-code --install-extension ./vscode-terminal-bridge-0.3.0.vsix
+code --install-extension ./vscode-terminal-bridge-0.4.0.vsix
 npm link
 ```
 
@@ -54,7 +54,7 @@ vscode-terminal --window WINDOW_ID close TERMINAL_ID
 
 ## 에이전트 메시지함
 
-`agent`와 `message` 하위 명령도 기존처럼 JSON 한 줄을 반환합니다. Codex 공유 데몬을 사용하지 않으며, `codex --no-daemon`으로 실행한 에이전트도 이 CLI를 호출해 메시지를 읽고 답할 수 있습니다. 다른 에이전트의 터미널에 입력하거나 대기 중인 모델을 자동 실행하지 않습니다.
+`agent`와 `message` 하위 명령도 기존처럼 JSON 한 줄을 반환합니다. 기존 터미널을 `agent register`로 등록하면 디스크 메시지함을 읽고 답할 수 있습니다. `agent start`로 확장이 직접 시작한 Codex 터미널은 아래 관리형 에이전트 기능으로 새 메시지가 있을 때 자동으로 작업을 시작합니다. 두 방식 모두 Codex 공유 데몬을 사용하지 않습니다.
 
 먼저 `windows`와 `list`로 대상 창과 터미널을 확인합니다. 등록은 해당 창의 확장에서 현재 터미널 ID를 검증하며, 셸 PID나 이름으로 세션을 추측하지 않습니다.
 
@@ -89,7 +89,52 @@ nextCursor가 있으면 남은 페이지도 읽는다. 새 확인 주기는 커�
 전송 요청 ID를 재사용해 중복을 막고, enqueue나 ack를 작업 완료로 보고하지 않는다.
 ```
 
-이 규칙은 협력적인 확인 방식입니다. 작업 중간의 즉시 수신이나 대기 중인 에이전트의 자동 깨우기는 보장하지 않습니다. 공식 Codex 확장 채팅창을 제어하는 기능도 포함하지 않습니다.
+기존 터미널을 등록한 경우에는 위 규칙에 따라 에이전트가 직접 메시지를 확인합니다. 등록만으로 자동 깨우기가 활성화되지는 않습니다. 공식 Codex 확장 채팅창은 제어하지 않습니다.
+
+## 관리형 Codex 자동 실행
+
+`agent start`는 선택한 VS Code 창에 새 Codex 터미널을 만듭니다. 확장이 에이전트별로 전용 `codex app-server`를 시작하고, private Unix socket에 연결한 Codex 기본 remote TUI를 터미널에 표시합니다. 사용자는 이 TUI에서 직접 대화하고 승인·질문에 답할 수 있습니다. 서버는 해당 에이전트만을 위한 프로세스이며 기존 Codex 세션이나 공유 데몬에 연결하지 않습니다.
+
+```bash
+# UUID는 시작 전에 생성해 보관합니다. 응답의 id가 AGENT_UUID입니다.
+vscode-terminal --window WINDOW_ID agent start --name reviewer --cwd /absolute/project --request-id LAUNCH_REQUEST_UUID
+# 모델을 지정하려면 같은 명령에 --model MODEL을 추가합니다.
+vscode-terminal --window WINDOW_ID agent status AGENT_UUID
+
+vscode-terminal message send AGENT_UUID --from SENDER_UUID --text '변경 사항을 검토해주세요' --request-id MESSAGE_UUID
+vscode-terminal message delivery MESSAGE_UUID --agent AGENT_UUID
+
+# 전용 서버와 해당 터미널을 종료합니다.
+vscode-terminal --window WINDOW_ID agent stop AGENT_UUID
+```
+
+Codex 실행 파일은 기본적으로 VS Code 프로세스의 `PATH`에서 `codex`를 찾습니다. 다른 실행 파일을 사용하려면 애플리케이션 설정 `terminalBridge.codexPath`에 절대 경로를 지정합니다. 설정은 새 에이전트부터 적용됩니다. private Unix socket의 app-server와 remote TUI를 지원하는 Codex가 설치되어 있어야 합니다.
+
+메시지함 명령용 Node.js도 시작 전에 실행 경로와 버전(22 이상)을 확인합니다. 확인한 절대 경로를 에이전트 지침에 사용합니다. GUI에서 실행한 VS Code가 Node를 찾지 못하면 `terminalBridge.nodePath`에 Node 실행 파일의 절대 경로를 지정합니다.
+
+실제 연결 검증 버전은 Codex 0.161.0과 macOS VS Code 1.141.0입니다. 관리형 TUI는 시작 시 업데이트 선택 화면을 띄우지 않도록 해당 실행에만 `check_for_update_on_startup=false`를 적용합니다. Codex의 로그인·모델·승인·샌드박스 설정은 기존 설정을 따릅니다.
+
+시작 응답의 `state: starting`은 준비 중이라는 뜻입니다. `agent status`에서 준비 결과를 확인합니다. 같은 창의 확장이 살아 있는 동안에는 같은 launch request ID와 옵션으로 재시도해도 동일한 시작 결과를 반환합니다. 다른 옵션을 넣으면 `ID_CONFLICT`입니다. 확장 재시작 이후에는 이전 launch request ID로 복구하거나 자동 재연결하지 않습니다.
+
+접수 전 경로·메시지함 준비가 실패한 요청은 원인을 고친 뒤 같은 ID로 재시도할 수 있습니다. 접수한 요청은 종료된 뒤에도 같은 ID가 새 에이전트를 만들지 않도록 유지합니다. 창당 동시 관리 한도는 8개, 접수 이력 한도는 1,000개입니다. 이력 한도에 도달하면 실행 중인 작업을 마친 뒤 창을 reload해 새 요청 ID를 사용합니다.
+
+새 메시지가 저장되면 확장은 에이전트 상태를 확인하고, 유휴 상태일 때 메시지함을 읽으라는 짧은 알림으로 새 turn을 시작합니다. 처리 중이거나 사용자 승인·답변을 기다릴 때는 대기합니다. 메시지 본문은 메시지함에서 읽으며, 승인을 자동으로 허용하거나 다른 터미널에 키 입력을 보내지 않습니다. inbox가 바뀌지 않은 유휴 poll에서는 전체 메시지를 반복 조회하지 않습니다.
+
+터미널 연결은 전용 로컬 프록시를 거칩니다. TUI가 원래 thread에 연결했다는 응답을 확인한 뒤에만 자동 실행을 허용합니다. `/new`, `/resume`, `/fork`로 다른 대화로 이동하거나 연결이 끊기면 원래 대화의 자동 실행을 멈춥니다. `detached`는 현재 터미널과 원래 대화의 연결을 확인하지 못한 상태입니다. 승인·질문은 원래 Codex TUI로 그대로 전달됩니다.
+
+`message delivery`는 수신 확인과 별도로 자동 실행의 진행 상황을 반환합니다.
+
+| `stage` | 의미 |
+| --- | --- |
+| `queued` | 메시지가 저장되었으며 아직 자동 제출 시도가 없음 |
+| `submission_unknown` | 제출 의도를 디스크에 기록했지만 turn 시작을 확인하지 못함. 아직 전송되지 않았거나 응답이 유실된 경우도 포함 |
+| `turn_started` | 해당 제출에 연결된 turn 시작을 확인함 |
+| `turn_completed` | 해당 turn이 종료됨. `status`는 `completed`, `failed`, `interrupted` 중 하나 |
+
+제출 기록은 메시지 ID와 실행·thread·창 ID에 연결해 디스크에 남깁니다. 응답 유실이나 중단으로 결과가 불명확하면 자동 재제출하지 않습니다. `uncertain` 상태와 `message delivery`를 확인하고 Codex TUI에서 실제 진행 상황을 검토합니다. `turn_completed`는 turn 종료를 뜻하며 요청한 작업의 성공이나 메시지 수신 확인을 보장하지 않습니다. 메시지를 처리한 에이전트가 `message ack`를 명시적으로 실행해야 합니다. 자동 실행만으로 ack하지 않습니다.
+
+자동 실행 대상은 **이 확장의 `agent start`로 시작한 터미널만**입니다. 기존 터미널의 이름·PID·등록 이력으로 대상을 추측하지 않습니다. 터미널 닫기, `agent stop`, 창 닫기 또는 확장 reload 시 전용 서버를 종료합니다. 메시지와 제출·수신 확인 기록은 남지만, 다시 시작한 확장이 이전 터미널을 자동 인계하거나 불명확한 제출을 재전송하지 않습니다. 확장 reload가 실행 중인 관리형 작업을 종료한다는 점을 고려해 사용하세요.
+
 
 ## macOS 스마트 붙여넣기
 
@@ -147,9 +192,13 @@ Orca 참고 구현은 `terminal-clipboard-paste.ts`(텍스트/비트맵), `termi
 ```bash
 npm test
 npm run test:integration
+# 설치된 Codex와 실제 모델로 두 차례 자동 깨우기·ack·종료까지 검증
+BRIDGE_TEST_CODEX=1 npm run test:integration
 npm run package
 ```
 
 `test:integration`은 설치된 macOS VS Code를 별도 프로필·작업 공간으로 실행합니다. 실제 CLI → socket → 확장 → 터미널 흐름으로 생성, 출력, 종료 코드, busy 보호, 중단, 종료를 검증합니다. 스마트 붙여넣기 명령 등록과 실제 PTY에 전달된 이미지·동영상·폴더 입력도 검사합니다. OS 클립보드 검증은 일반 클립보드와 분리된 named pasteboard를 사용합니다. 결과는 `artifacts/integration.json`에 남습니다. 다른 실행 파일은 `BRIDGE_VSCODE_PATH` 환경 변수로 지정합니다.
+
+실제 Codex 검증은 `BRIDGE_TEST_CODEX=1`일 때만 실행하며 현재 Codex 로그인·권한 설정과 모델을 사용합니다. 실행 파일과 모델은 `BRIDGE_TEST_CODEX_PATH`, `BRIDGE_TEST_CODEX_MODEL`로 지정할 수 있습니다. 모델 사용량이 발생하며, 테스트를 위해 승인 정책을 완화하거나 승인 요청을 자동 처리하지 않습니다.
 
 VS Code 공개 API만 사용하며 proposed API나 VS Code 앱 파일 수정은 필요하지 않습니다. API 참고: [Terminal](https://code.visualstudio.com/api/references/vscode-api#Terminal), [TerminalShellExecution](https://code.visualstudio.com/api/references/vscode-api#TerminalShellExecution).

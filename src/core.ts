@@ -20,6 +20,10 @@ export class TerminalBridge {
   private executions = new Map<string, ExecutionRecord>();
   private byExecution = new WeakMap<vscode.TerminalShellExecution, ExecutionRecord>();
   private disposed = false;
+  bindManagedTerminal(terminal: vscode.Terminal): string {
+    const record = this.track(terminal); record.owned = true; return record.id;
+  }
+  terminalId(terminal: vscode.Terminal): string | undefined { return this.byTerminal.get(terminal)?.id; }
   constructor(private window: typeof vscode.window, private limits = { maxOutputUnits: 65536, maxExecutions: 64 }, private cleanShellDirectory?: string) {
     for (const terminal of window.terminals) this.track(terminal);
     this.subscriptions.push(window.onDidOpenTerminal(t => this.track(t)));

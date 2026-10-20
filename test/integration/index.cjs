@@ -15,6 +15,8 @@ exports.run = async function run() {
   let external;
   let pasteTerminal;
   let pasteEmitter;
+  let managedAgent;
+  let managedWindow;
   async function cli(...args) {
     try {
       const { stdout } = await exec(process.env.BRIDGE_NODE_PATH, [path.join(root, 'dist/cli.js'), '--directory', process.env.VSCODE_TERMINAL_BRIDGE_DIR, ...args], { timeout: 15000 });
@@ -118,9 +120,71 @@ exports.run = async function run() {
     assert.equal(received.join(''), "\x1b[200~/tmp/screenshot.png\x1b[201~ '/tmp/movie clip.mov' '/tmp/folder' ");
     assert.doesNotMatch(received.join(''), /[\r\n]/);
     check('Smart paste command registered; real VS Code PTY receives image frame and quoted video/folder paths without Enter');
+    if (process.env.BRIDGE_TEST_CODEX === '1') {
+      const workspace = process.env.BRIDGE_TEST_WORKSPACE;
+      assert.ok(workspace && path.isAbsolute(workspace), 'managed test needs the harness isolated workspace');
+      assert.deepEqual(await fs.readdir(workspace), [], 'managed fixture workspace starts empty');
+      managedWindow = windows[0].id;
+      const name = 'Managed Codex integration ' + randomUUID();
+      const launchArgs = ['--window', managedWindow, 'agent', 'start', '--name', name,
+        '--cwd', workspace, '--request-id', randomUUID()];
+      if (process.env.BRIDGE_TEST_CODEX_MODEL) launchArgs.push('--model', process.env.BRIDGE_TEST_CODEX_MODEL);
+      summary.managed = { enabled: true, isolatedWorkspace: true, turns: [], stopped: false };
+      const started = await cli(...launchArgs);
+      managedAgent = started.id;
+      const idle = await poll(async () => {
+        const status = await cli('--window', managedWindow, 'agent', 'status', managedAgent);
+        if (['error', 'closed', 'uncertain'].includes(status.state)) {
+          throw Object.assign(new Error('Managed Codex did not become idle'), { code: status.error || 'MANAGED_START_FAILED' });
+        }
+        return status.state === 'idle' && status;
+      }, 'real managed Codex idle', 120000);
+      assert.ok(idle.threadId && idle.terminalId, 'managed launch binds a thread and native terminal');
+      const nativeTerminal = vscode.window.terminals.find(terminal => terminal.name === name);
+      assert.ok(nativeTerminal, 'native Codex terminal exists in the isolated VS Code window');
+      assert.equal((await cli(...launchArgs)).id, managedAgent, 'same live launch request deduplicates');
+      check('Actual installed Codex starts with a native remote TUI in the isolated workspace');
+      for (let index = 1; index <= 2; index++) {
+        const messageId = randomUUID();
+        const marker = 'BRIDGE_MANAGED_ACK_' + index;
+        await cli('message', 'send', managedAgent, '--from', senderId, '--request-id', messageId, '--text',
+          `Integration fixture only: acknowledge this message (${messageId}) with the mailbox CLI described in your developer instructions, ` +
+          `then reply exactly ${marker}. Do not send peer messages, edit project files, or perform any other task. ` +
+          `Your working directory is a disposable empty integration workspace.`);
+        const observed = await poll(async () => {
+          const delivery = await cli('message', 'delivery', messageId, '--agent', managedAgent);
+          const status = await cli('--window', managedWindow, 'agent', 'status', managedAgent);
+          if (['error', 'closed', 'uncertain'].includes(status.state)) {
+            throw Object.assign(new Error('Managed Codex cannot continue the integration turn'), { code: status.error || 'MANAGED_TURN_FAILED' });
+          }
+          if (delivery.stage !== 'turn_completed') return false;
+          if (delivery.status !== 'completed') throw Object.assign(new Error('Managed integration turn did not complete successfully'), { code: 'MANAGED_TURN_' + delivery.status.toUpperCase() });
+          const all = await cli('message', 'list', managedAgent, '--all');
+          const message = all.messages.find(item => item.id === messageId);
+          return message?.acknowledgedAt && status.state === 'idle' && { delivery, acknowledgedAt: message.acknowledgedAt };
+        }, 'managed message ' + index + ' completes and explicitly acknowledges', 120000);
+        summary.managed.turns.push({ stage: observed.delivery.stage, status: observed.delivery.status,
+          acknowledged: true, markerRequested: marker });
+        if (index === 2) assert.notEqual(observed.delivery.turnId, summary.managed.firstTurnId, 'second message starts a new turn');
+        else summary.managed.firstTurnId = observed.delivery.turnId;
+        check('Actual managed Codex automatically handles and acknowledges message ' + index);
+      }
+      assert.deepEqual(await fs.readdir(workspace), [], 'managed turns did not modify the fixture workspace');
+      const stopped = await cli('--window', managedWindow, 'agent', 'stop', managedAgent);
+      assert.equal(stopped.state, 'closed');
+      await poll(async () => !vscode.window.terminals.includes(nativeTerminal) &&
+        !(await cli('list')).some(terminal => terminal.id === idle.terminalId), 'managed native terminal removed', 15000);
+      summary.managed.stopped = true;
+      delete summary.managed.firstTurnId;
+      check('Managed stop removes its native terminal; fixture workspace remains empty');
+    } else summary.managed = { enabled: false, reason: 'Set BRIDGE_TEST_CODEX=1 to exercise actual Codex and model calls' };
     summary.passed = true;
   } catch (error) { summary.passed = false; summary.error = { message: error.message, code: error.code }; throw error;
   } finally {
+    if (managedAgent) {
+      try { await cli('--window', managedWindow, 'agent', 'stop', managedAgent); }
+      catch (error) { summary.managedCleanupError = { code: error.code || 'MANAGED_CLEANUP_FAILED' }; }
+    }
     for (const id of terminals) { try { await cli('interrupt', id); await cli('close', id); } catch {} }
     external?.dispose();
     pasteTerminal?.dispose(); pasteEmitter?.dispose();

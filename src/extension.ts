@@ -8,10 +8,13 @@ import { startServer, defaultDirectory } from './transport';
 import { createSmartPaste } from './smart-paste';
 import { readMacClipboard } from './macos-clipboard';
 import { Mailbox } from './mailbox';
+import { ManagedAgents } from './managed-agents';
 
 let connection: Awaited<ReturnType<typeof startServer>> | undefined;
 let bridge: TerminalBridge | undefined;
 let cleanShellDirectory: string | undefined;
+let managed: ManagedAgents | undefined;
+let terminalCloseSubscription: vscode.Disposable | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
   if (!vscode.workspace.isTrusted) return;
@@ -23,6 +26,20 @@ export async function activate(context: vscode.ExtensionContext) {
   const directory = process.env.VSCODE_TERMINAL_BRIDGE_DIR || defaultDirectory();
   const windowId = randomUUID();
   const mailbox = new Mailbox(directory);
+  managed = new ManagedAgents({ windowId, directory, mailbox, cliPath: join(__dirname, 'cli.js'),
+    nodePath: () => vscode.workspace.getConfiguration?.('terminalBridge').get<string>('nodePath', 'node') ?? 'node',
+    codexPath: () => vscode.workspace.getConfiguration?.('terminalBridge').get<string>('codexPath', 'codex') ?? 'codex',
+    createTerminal: options => {
+      const terminal = vscode.window.createTerminal({ name: options.name, cwd: options.cwd,
+        shellPath: options.executable, shellArgs: ['-c', 'check_for_update_on_startup=false', '--remote', options.endpoint, 'resume', options.threadId] });
+      const id = bridge!.bindManagedTerminal(terminal);
+      return { id, dispose: () => terminal.dispose() };
+    } });
+  const activeManaged = managed;
+  terminalCloseSubscription = vscode.window.onDidCloseTerminal(terminal => {
+    const id = bridge?.terminalId(terminal);
+    if (id) void activeManaged.terminalClosed(id);
+  });
   try {
     connection = await startServer({
       directory,
@@ -30,6 +47,15 @@ export async function activate(context: vscode.ExtensionContext) {
         workspaceFolders: (vscode.workspace.workspaceFolders || []).map(f => f.uri.toString()) },
       dispatch: async (method, params) => {
         if (!vscode.workspace.isTrusted) throw new BridgeError('WORKSPACE_UNTRUSTED', 'Terminal control requires a trusted workspace');
+        if (method === 'agent.start') {
+          if (vscode.env.remoteName) throw new BridgeError('REMOTE_AGENT_UNSUPPORTED', 'Managed Codex terminals require a local workspace');
+          return activeManaged.start(params);
+        }
+        if (method === 'agent.status' || method === 'agent.stop') {
+          const id = (params as { id?: unknown })?.id;
+          if (typeof id !== 'string') throw new BridgeError('INVALID_PARAMS', 'A managed agent ID is required');
+          return method === 'agent.status' ? activeManaged.status(id) : activeManaged.stop(id);
+        }
         if (method === 'agent.register') {
           const input = params as { id?: string; name?: string; terminalId?: string };
           if (!input || typeof input !== 'object' || typeof input.terminalId !== 'string')
@@ -60,6 +86,8 @@ export async function activate(context: vscode.ExtensionContext) {
     })));
     return { bridge, connection: connection.info };
   } catch (error) {
+    terminalCloseSubscription?.dispose(); terminalCloseSubscription = undefined;
+    await managed?.dispose(); managed = undefined;
     bridge.dispose(); bridge = undefined;
     await rm(cleanShellDirectory, { recursive: true, force: true }); cleanShellDirectory = undefined;
     output.appendLine(`Could not start local bridge: ${String(error)}`);
@@ -68,6 +96,8 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate() {
+  terminalCloseSubscription?.dispose(); terminalCloseSubscription = undefined;
+  await managed?.dispose(); managed = undefined;
   bridge?.dispose(); bridge = undefined;
   const closing = connection; connection = undefined;
   if (closing) await closing.close();
