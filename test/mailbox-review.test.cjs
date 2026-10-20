@@ -153,9 +153,9 @@ test('message lists verify canonical contents before exposing schema-valid inbox
       } else {
         const replacement = field === 'text' ? 'malicious payload' : field === 'from' ? randomUUID() : '2000-01-01T00:00:00.000Z';
         await fs.writeFile(path.join(directory, 'mailbox/messages', to, id + '.json'),
-          JSON.stringify({ ...message, [field]: replacement }), { flag: 'r+' });
+          JSON.stringify({ ...message, [field]: replacement }));
       }
-      await assert.rejects(box.messages({ agentId: to }), { code: 'MAILBOX_CORRUPT' });
+      await assert.rejects(box.messages({ agentId: to }), { code: 'MAILBOX_CORRUPT', message: /canonical request/ });
     });
   }
 });
