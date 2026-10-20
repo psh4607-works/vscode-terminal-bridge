@@ -59,7 +59,7 @@ test('record schema rejects coerced recipient IDs instead of silently dropping t
   const from = randomUUID(), to = randomUUID(), messageId = randomUUID();
   await box.register(from, 'sender'); await box.register(to, 'receiver');
   const sent = await box.send({ id: messageId, from, to, text: 'persist' });
-  const filename = path.join(directory, 'mailbox/messages', messageId + '.json');
+  const filename = path.join(directory, 'mailbox/messages', to, messageId + '.json');
   await fs.writeFile(filename, JSON.stringify({ ...sent, to: [to] }));
   await assert.rejects(box.messages({ agentId: to }), { code: 'MAILBOX_CORRUPT' });
 });
@@ -97,7 +97,7 @@ test('accepted messages remain readable after the mailbox grows beyond 10000 rec
   const from = randomUUID(), to = randomUUID();
   await box.register(from, 'sender'); await box.register(to, 'receiver');
   await box.send({ id: randomUUID(), from, to, text: 'initial' });
-  const folder = path.join(directory, 'mailbox/messages');
+  const folder = path.join(directory, 'mailbox/messages', to);
   for (let offset = 0; offset < 10000; offset += 100) {
     await Promise.all(Array.from({ length: 100 }, (_, i) => {
       const id = `00000000-0000-0000-0000-${String(offset + i).padStart(12, '0')}`;
@@ -141,10 +141,25 @@ test('failed publication is not reported as delivery and orphan temp files are i
   fs.link = async () => { throw Object.assign(new Error('simulated full disk'), { code: 'ENOSPC' }); };
   try { await assert.rejects(box.send(input), { code: 'ENOSPC' }); }
   finally { fs.link = original; }
-  const folder = path.join(directory, 'mailbox/messages');
-  assert.deepEqual(await fs.readdir(folder), []);
+  assert.deepEqual(await fs.readdir(path.join(directory, 'mailbox/requests')), []);
+  const folder = path.join(directory, 'mailbox/messages', to);
+  await fs.mkdir(folder, { recursive: true, mode: 0o700 });
   await fs.writeFile(path.join(folder, '.interrupted.tmp'), '{', { mode: 0o600 });
   assert.deepEqual((await box.messages({ agentId: to })).messages, []);
   await box.send(input);
   assert.equal((await box.messages({ agentId: to })).messages[0].id, input.id);
+});
+test('a corrupt message in another inbox cannot block the intended recipient', async t => {
+  const { directory, box } = await fixture(t);
+  const from = randomUUID(), first = randomUUID(), second = randomUUID();
+  for (const [id, name] of [[from, 'sender'], [first, 'first'], [second, 'second']]) await box.register(id, name);
+  const bad = await box.send({ id: randomUUID(), from, to: first, text: 'damaged later' });
+  const good = await box.send({ id: randomUUID(), from, to: second, text: 'still readable' });
+  const partitioned = path.join(directory, 'mailbox/messages', first, bad.id + '.json');
+  const flat = path.join(directory, 'mailbox/messages', bad.id + '.json');
+  const damaged = await fs.stat(partitioned).then(() => partitioned, () => flat);
+  await fs.writeFile(damaged, '{');
+  const inbox = await box.messages({ agentId: second });
+  assert.equal(inbox.messages[0].id, good.id);
+  await assert.rejects(box.messages({ agentId: first }), { code: 'MAILBOX_CORRUPT' });
 });
