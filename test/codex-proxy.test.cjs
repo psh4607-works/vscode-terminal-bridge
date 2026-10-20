@@ -83,8 +83,21 @@ test('native relay passes a 17 MiB plugin catalog response and remains usable', 
   assert.equal(proxy.canWake('large-catalog-thread'), true);
 });
 
+async function bindIdle({ native, backend, proxy }) {
+  backend.once('message', bytes => {
+    const request = JSON.parse(bytes.toString());
+    backend.send(JSON.stringify({ id: request.id, result: { thread: { id: 'large-catalog-thread', status: { type: 'idle' } } } }));
+  });
+  const response = once(native, 'message');
+  native.send(JSON.stringify({ id: 'bind-idle', method: 'thread/resume', params: { threadId: 'large-catalog-thread' } }));
+  await response;
+  assert.equal(proxy.canWake('large-catalog-thread'), true, 'fixture establishes a real idle binding');
+}
+
 test('relay rejects frames above the native 128 MiB bound without reading their body', { timeout: 5000 }, async t => {
-  const { native, backend, proxy } = await relayFixture(t);
+  const fixture = await relayFixture(t);
+  await bindIdle(fixture);
+  const { native, backend, proxy } = fixture;
   const closed = once(native, 'close');
   // Unmasked server frame header advertises an oversized body; no 128 MiB allocation is needed.
   const header = Buffer.alloc(10); header[0] = 0x81; header[1] = 127;
@@ -92,4 +105,29 @@ test('relay rejects frames above the native 128 MiB bound without reading their 
   backend._socket.write(header);
   await closed;
   assert.equal(proxy.canWake('large-catalog-thread'), false);
+});
+
+
+test('slow native consumers are disconnected when queued data plus the next frame exceeds 144 MiB', { timeout: 5000 }, async t => {
+  const fixture = await relayFixture(t);
+  await bindIdle(fixture);
+  const { native, backend, proxy } = fixture;
+  const payload = JSON.stringify({ method: 'thread/status/changed', params: { threadId: 'large-catalog-thread', status: { type: 'idle' } } });
+  const limit = 144 * 1024 * 1024;
+  // Model a stalled kernel/user-space send queue without allocating 144 MiB. All frames
+  // still traverse the real backend -> relay -> native sockets and forwarding logic.
+  let buffered = limit - Buffer.byteLength(payload);
+  Object.defineProperty(proxy.native, 'bufferedAmount', { configurable: true, get: () => buffered });
+  const accepted = once(native, 'message');
+  backend.send(payload);
+  assert.equal((await accepted)[0].toString(), payload, 'the exact queue budget remains allowed');
+  assert.equal(proxy.canWake('large-catalog-thread'), true);
+  buffered += 1;
+  const outcome = Promise.race([
+    once(native, 'message').then(() => 'forwarded'),
+    once(native, 'close').then(() => 'closed'),
+  ]);
+  backend.send(payload);
+  assert.equal(await outcome, 'closed', 'one byte over the queue budget must disconnect the slow consumer');
+  assert.equal(proxy.canWake('large-catalog-thread'), false, 'backpressure revokes the existing wake binding');
 });

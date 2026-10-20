@@ -5,7 +5,8 @@ import WebSocket, { WebSocketServer } from 'ws';
 
 // Match the native Codex remote client frame/message limit (app-server-client/src/remote.rs).
 const MAX_FRAME = 128 * 1024 * 1024;
-const MAX_BUFFER = 2 * MAX_FRAME;
+// Allow one native-sized frame plus a bounded 16 MiB backlog before dropping a slow peer.
+const MAX_BUFFER = MAX_FRAME + 16 * 1024 * 1024;
 const MAX_PENDING = 64;
 const key = (id: unknown) => JSON.stringify(id);
 const validId = (id: unknown) => typeof id === 'string' || typeof id === 'number';
