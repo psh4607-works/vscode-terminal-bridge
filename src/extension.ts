@@ -7,6 +7,7 @@ import { TerminalBridge, BridgeError } from './core';
 import { startServer, defaultDirectory } from './transport';
 import { createSmartPaste } from './smart-paste';
 import { readMacClipboard } from './macos-clipboard';
+import { Mailbox } from './mailbox';
 
 let connection: Awaited<ReturnType<typeof startServer>> | undefined;
 let bridge: TerminalBridge | undefined;
@@ -20,13 +21,25 @@ export async function activate(context: vscode.ExtensionContext) {
   bridge = new TerminalBridge(vscode.window, undefined, cleanShellDirectory);
   context.subscriptions.push({ dispose: () => bridge?.dispose() });
   const directory = process.env.VSCODE_TERMINAL_BRIDGE_DIR || defaultDirectory();
+  const windowId = randomUUID();
+  const mailbox = new Mailbox(directory);
   try {
     connection = await startServer({
       directory,
-      metadata: { id: randomUUID(), pid: process.pid,
+      metadata: { id: windowId, pid: process.pid,
         workspaceFolders: (vscode.workspace.workspaceFolders || []).map(f => f.uri.toString()) },
       dispatch: async (method, params) => {
         if (!vscode.workspace.isTrusted) throw new BridgeError('WORKSPACE_UNTRUSTED', 'Terminal control requires a trusted workspace');
+        if (method === 'agent.register') {
+          const input = params as { id?: string; name?: string; terminalId?: string };
+          if (!input || typeof input !== 'object' || typeof input.terminalId !== 'string')
+            throw new BridgeError('INVALID_PARAMS', 'Registration requires a terminal ID');
+          const terminals = await bridge!.dispatch('terminal.list', {}) as { id: string }[];
+          if (!terminals.some(t => t.id === input.terminalId))
+            throw new BridgeError('TERMINAL_NOT_FOUND', 'Select a current terminal ID in this window before registering');
+          const agent = await mailbox.register(input.id!, input.name!);
+          return { ...agent, registration: { windowId, terminalId: input.terminalId } };
+        }
         return bridge!.dispatch(method, params);
       },
     });

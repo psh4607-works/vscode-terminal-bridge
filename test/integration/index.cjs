@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { randomUUID } = require('node:crypto');
 const vscode = require('vscode');
 const exec = promisify(execFile);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -47,6 +48,26 @@ exports.run = async function run() {
     terminals.push(created.id);
     await poll(async () => (await cli('list')).find(t => t.id === created.id && t.shellIntegration && t.state === 'idle'), 'shell integration and idle');
     check('CLI creates real terminal with shell integration');
+    const senderId = randomUUID(), receiverId = randomUUID(), requestId = randomUUID();
+    const sender = await cli('--window', windows[0].id, 'agent', 'register', created.id,
+      '--name', 'sender', '--session', senderId);
+    const receiver = await cli('--window', windows[0].id, 'agent', 'register', existing.id,
+      '--name', 'reviewer', '--session', receiverId);
+    assert.equal(sender.registration.terminalId, created.id);
+    assert.equal(receiver.id, receiverId);
+    const sendArgs = ['message', 'send', receiverId, '--from', senderId, '--text', 'Review this fixture', '--request-id', requestId];
+    const message = await cli(...sendArgs);
+    assert.deepEqual(await cli(...sendArgs), message);
+    const inbox = await cli('message', 'list', receiverId);
+    assert.equal(inbox.messages.length, 1);
+    assert.equal(inbox.messages[0].id, requestId);
+    await assert.rejects(cli('message', 'ack', requestId, '--agent', senderId), { code: 'WRONG_RECIPIENT' });
+    const receipt = await cli('message', 'ack', requestId, '--agent', receiverId);
+    assert.deepEqual(await cli('message', 'ack', requestId, '--agent', receiverId), receipt);
+    assert.equal((await cli('message', 'list', receiverId)).messages.length, 0);
+    assert.equal((await cli('message', 'list', receiverId, '--all')).messages[0].acknowledgedAt, receipt.acknowledgedAt);
+    assert.equal((await cli('list')).find(t => t.id === created.id).state, 'idle');
+    check('Real extension verifies registration; separate CLI processes persist, deduplicate and acknowledge messages without terminal input');
     const marker = 'BRIDGE_REAL_OUTPUT_26391';
     const execution = await cli('execute', created.id, '--command', `printf '${marker}'; false`);
     const executionId = execution.id || execution.executionId;
