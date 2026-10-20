@@ -6,6 +6,14 @@ import { BridgeError } from './core';
 
 interface Agent { id: string; name: string; createdAt: string }
 interface Message { id: string; from: string; to: string; text: string; createdAt: string }
+interface DeliveryAttempt { id: string; agentId: string; runId: string; threadId: string; windowId: string; attemptedAt: string }
+type DeliveryStatus = 'completed' | 'failed' | 'interrupted';
+interface DeliveryStarted { id: string; agentId: string; runId: string; turnId: string; startedAt: string }
+interface DeliveryCompleted { id: string; agentId: string; runId: string; turnId: string; completedAt: string; status: DeliveryStatus }
+export type DeliveryState = { id: string; agentId: string; stage: 'queued' } |
+  (DeliveryAttempt & { stage: 'submission_unknown' }) |
+  (DeliveryAttempt & DeliveryStarted & { stage: 'turn_started' }) |
+  (DeliveryAttempt & DeliveryStarted & DeliveryCompleted & { stage: 'turn_completed' });
 interface Receipt { id: string; agentId: string; acknowledgedAt: string }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_RECORD_BYTES = 65536;
@@ -37,6 +45,36 @@ function isMessage(value: any): value is Message {
 }
 function isReceipt(value: any): value is Receipt {
   return value && isId(value.id) && isId(value.agentId) && validDate(value.acknowledgedAt);
+}
+function hasOnlyKeys(value: any, keys: string[]): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).every(key => keys.includes(key));
+}
+function isDeliveryAttempt(value: any): value is DeliveryAttempt {
+  return value && isId(value.id) && isId(value.agentId) && isId(value.runId) &&
+    isId(value.threadId) && isId(value.windowId) && validDate(value.attemptedAt) &&
+    hasOnlyKeys(value, ['id', 'agentId', 'runId', 'threadId', 'windowId', 'attemptedAt']);
+}
+function isTurnId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 &&
+    !/[\x00-\x20\x7f]/.test(value);
+}
+function turnId(value: unknown): string {
+  if (!isTurnId(value)) fail('INVALID_PARAMS', 'turnId must be a nonblank identifier without control characters, at most 512 characters');
+  return value;
+}
+function isDeliveryStarted(value: any): value is DeliveryStarted {
+  return value && isId(value.id) && isId(value.agentId) && isId(value.runId) &&
+    isTurnId(value.turnId) && validDate(value.startedAt) &&
+    hasOnlyKeys(value, ['id', 'agentId', 'runId', 'turnId', 'startedAt']);
+}
+function isDeliveryStatus(value: unknown): value is DeliveryStatus {
+  return value === 'completed' || value === 'failed' || value === 'interrupted';
+}
+function isDeliveryCompleted(value: any): value is DeliveryCompleted {
+  return value && isId(value.id) && isId(value.agentId) && isId(value.runId) &&
+    isTurnId(value.turnId) && validDate(value.completedAt) && isDeliveryStatus(value.status) &&
+    hasOnlyKeys(value, ['id', 'agentId', 'runId', 'turnId', 'completedAt', 'status']);
 }
 function compare(left: string, right: string) { return left < right ? -1 : left > right ? 1 : 0; }
 function messageKey(message: Message) { return message.createdAt + '_' + message.id; }
@@ -196,6 +234,77 @@ export class Mailbox {
     const messages = selected.slice(0, limit);
     const last = messages.at(-1);
     return { messages, nextCursor: selected.length > limit ? messageKey(last!) : null };
+  }
+  async getMessage(input: { id: string; agentId: string }): Promise<Message> {
+    const messageId = id(input.id), agentId = id(input.agentId);
+    await this.agent(agentId);
+    await this.checkLayout();
+    const message = await this.read(await this.folder('requests'), messageId, isMessage);
+    if (!message) fail('MESSAGE_NOT_FOUND', 'Message does not exist');
+    if (message.to !== agentId) fail('WRONG_RECIPIENT', 'Only the intended recipient can access this message');
+    const delivered = await this.read(await this.folder('messages', false, agentId), messageId, isMessage);
+    if (!delivered) fail('MESSAGE_NOT_DELIVERED', 'Retry the original send before using an incomplete delivery');
+    if (!sameMessage(delivered, message) || delivered.createdAt !== message.createdAt)
+      fail('MAILBOX_CORRUPT', 'Inbox record does not match the canonical request');
+    return message;
+  }
+  async delivery(input: { id: string; agentId: string }): Promise<DeliveryState> {
+    const message = await this.getMessage(input);
+    // Read later stages first: a concurrent writer cannot make a legitimate earlier stage look missing.
+    const completed = await this.read(await this.folder('delivery-completed'), message.id, isDeliveryCompleted);
+    const started = await this.read(await this.folder('delivery-started'), message.id, isDeliveryStarted);
+    const attempt = await this.read(await this.folder('delivery-attempts'), message.id, isDeliveryAttempt);
+    if (!attempt) {
+      if (started || completed) fail('MAILBOX_CORRUPT', 'Delivery stage exists without an attempt');
+      return { id: message.id, agentId: message.to, stage: 'queued' };
+    }
+    if (attempt.agentId !== message.to) fail('MAILBOX_CORRUPT', 'Delivery owner does not match message recipient');
+    for (const record of [started, completed]) {
+      if (record && (record.agentId !== attempt.agentId || record.runId !== attempt.runId))
+        fail('MAILBOX_CORRUPT', 'Delivery stage does not match its attempt owner');
+    }
+    if (completed && (!started || completed.turnId !== started.turnId))
+      fail('MAILBOX_CORRUPT', 'Completion does not match a started turn');
+    if (started && completed) return { ...attempt, ...started, ...completed, stage: 'turn_completed' };
+    if (started) return { ...attempt, ...started, stage: 'turn_started' };
+    return { ...attempt, stage: 'submission_unknown' };
+  }
+
+  async beginDelivery(input: { id: string; agentId: string; runId: string; threadId: string; windowId: string }): Promise<DeliveryState> {
+    const candidate: DeliveryAttempt = { id: id(input.id), agentId: id(input.agentId), runId: id(input.runId),
+      threadId: id(input.threadId), windowId: id(input.windowId), attemptedAt: new Date().toISOString() };
+    await this.delivery(candidate);
+    const stored = await this.publish(await this.folder('delivery-attempts', true), candidate, isDeliveryAttempt);
+    if (stored.agentId !== candidate.agentId) fail('MAILBOX_CORRUPT', 'Delivery owner does not match message recipient');
+    if (stored.runId !== candidate.runId || stored.threadId !== candidate.threadId || stored.windowId !== candidate.windowId)
+      fail('DELIVERY_CONFLICT', 'Message already has an immutable delivery attempt owned by another run');
+    return this.delivery(candidate);
+  }
+  async markDeliveryStarted(input: { id: string; agentId: string; runId: string; turnId: string }): Promise<DeliveryState> {
+    const candidate: DeliveryStarted = { id: id(input.id), agentId: id(input.agentId), runId: id(input.runId),
+      turnId: turnId(input.turnId), startedAt: new Date().toISOString() };
+    const state = await this.delivery(candidate);
+    if (state.stage === 'queued') fail('DELIVERY_NOT_STARTED', 'Persist a delivery attempt before recording turn start');
+    if (state.runId !== candidate.runId) fail('DELIVERY_CONFLICT', 'Turn belongs to another delivery owner');
+    const stored = await this.publish(await this.folder('delivery-started', true), candidate, isDeliveryStarted);
+    if (stored.agentId !== candidate.agentId || stored.runId !== candidate.runId || stored.turnId !== candidate.turnId)
+      fail('DELIVERY_CONFLICT', 'Message is already bound to another turn');
+    return this.delivery(candidate);
+  }
+  async markDeliveryCompleted(input: { id: string; agentId: string; runId: string; turnId: string; status: DeliveryStatus }): Promise<DeliveryState> {
+    if (!isDeliveryStatus(input.status)) fail('INVALID_PARAMS', 'Invalid turn completion status');
+    const candidate: DeliveryCompleted = { id: id(input.id), agentId: id(input.agentId), runId: id(input.runId),
+      turnId: turnId(input.turnId), status: input.status, completedAt: new Date().toISOString() };
+    const state = await this.delivery(candidate);
+    if (state.stage === 'queued' || state.stage === 'submission_unknown')
+      fail('DELIVERY_NOT_STARTED', 'Persist turn start before recording completion');
+    if (state.runId !== candidate.runId || state.turnId !== candidate.turnId)
+      fail('DELIVERY_CONFLICT', 'Completion belongs to another owner or turn');
+    const stored = await this.publish(await this.folder('delivery-completed', true), candidate, isDeliveryCompleted);
+    if (stored.agentId !== candidate.agentId || stored.runId !== candidate.runId ||
+      stored.turnId !== candidate.turnId || stored.status !== candidate.status)
+      fail('DELIVERY_CONFLICT', 'Turn already has a different immutable completion');
+    return this.delivery(candidate);
   }
   async ack(input: { id: string; agentId: string }): Promise<Receipt> {
     const messageId = id(input.id), agentId = id(input.agentId);

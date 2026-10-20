@@ -3,7 +3,7 @@
   "displayName": "Terminal Bridge",
   "description": "Local JSON CLI for observing and controlling VS Code terminals.",
   "publisher": "seongho",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -53,6 +53,12 @@
           "default": true,
           "scope": "application",
           "description": "On macOS, paste copied files/folders as paths and clipboard images as temporary PNGs in local terminals. Plain text uses normal VS Code paste."
+        },
+        "terminalBridge.codexPath": {
+          "type": "string",
+          "default": "codex",
+          "scope": "application",
+          "description": "Codex executable for extension-managed agents. Use codex from the VS Code process PATH or an absolute executable path. Applies to new agents."
         }
       }
     }
@@ -61,14 +67,18 @@
     "build": "tsc -p .",
     "test": "npm run build && node --test test/*.test.cjs",
     "test:integration": "npm run build && node scripts/integration.cjs",
-    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
+    "package": "npm run build && vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "1.100.0",
+    "@types/ws": "^8.18.2",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
   }
 }
